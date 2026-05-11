@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Acordes · Guitarra Portuguesa · Afinação de Lisboa</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+</head>
+<body>
+  <button class="audio-toggle" id="audio-toggle" title="Ligar/desligar som" aria-label="Som ligado">🔊</button>
+
+  <div class="container">
+    <header>
+      <div class="eyebrow">Compêndio · Afinação de Lisboa</div>
+      <h1>Acordes para <em>Guitarra Portuguesa</em></h1>
+      <p class="subtitle">Posições realistas pelo braço inteiro. Cordas duplas, com som. Inversões incluídas.</p>
+    </header>
+
+```
+<section class="tuning-panel">
+  <div class="tuning-header">
+    <h2>A afinação</h2>
+    <button class="tuning-play-btn" id="play-tuning">
+      <span>▶</span> Ouvir as cordas
+    </button>
+  </div>
+  <div class="tuning-strings" id="tuning-strings"></div>
+</section>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot fingered"></div><span>Casa premida</span></div>
+  <div class="legend-item"><div class="legend-dot root"></div><span>Tónica</span></div>
+  <div class="legend-item"><div class="legend-dot open"></div><span>Corda solta</span></div>
+  <div class="legend-item"><div class="legend-x"></div><span>Corda abafada</span></div>
+  <div class="legend-item" style="font-style:italic;opacity:0.85">Carrega nas cordas dos diagramas para as ouvir</div>
+</div>
+
+<div class="controls-section">
+  <div class="control-group">
+    <label class="control-label">Tónica</label>
+    <div class="button-row" id="root-filters"></div>
+  </div>
+  <div class="control-group">
+    <label class="control-label">Tipo de acorde</label>
+    <div class="button-row" id="type-filters"></div>
+  </div>
+</div>
+
+<div class="results-info" id="results-info"></div>
+<div id="chord-display"><div class="loading-msg">A carregar acordes…</div></div>
+
+<footer>
+  <div class="ornament">◆ ◆ ◆</div>
+  <p>Posições geradas algoritmicamente para tocabilidade realista — span ≤ 4 trastes,<br>cordas contíguas, no máximo 4 dedos com pestana detectada.<br>Inversões classificadas pelo baixo. Som sintetizado com cordas duplas (chorus natural).</p>
+</footer>
+```
+
+  </div>
+
+  <script src="chords-data.js"></script>
+
+  <script src="audio.js"></script>
+
+  <script>
+  /* =====================================================
+     Lógica principal: renderização, filtros, interacções
+     ===================================================== */
+
+  const CHORDS = DATA.chords;
+  const META = DATA.meta;
+  const NOTES_LIST = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  const INVERSIONS_ORDER = ['Fundamental', '1ª inv', '2ª inv', '3ª inv'];
+
+  let activeRoot = 'all';
+  let activeType = 'all';
+
+  // Estado por acorde: qual inversão e qual voicing está ativo
+  const cardState = {};  // { chordKey: { inversion: 'Fundamental', voicingIdx: 0 } }
+
+  // ============================================================
+  // Painel de afinação
+  // ============================================================
+  function buildTuning() {
+    const container = document.getElementById('tuning-strings');
+    const stringsInfo = [
+      { num: '1ª', note: 'Si', pt: 'mais aguda<br>par fina', stringIdx: 0 },
+      { num: '2ª', note: 'Lá', pt: 'par fina',               stringIdx: 1 },
+      { num: '3ª', note: 'Mi', pt: 'par fina',               stringIdx: 2 },
+      { num: '4ª', note: 'Si', pt: 'fina + bordão',          stringIdx: 3 },
+      { num: '5ª', note: 'Lá', pt: 'fina + bordão',          stringIdx: 4 },
+      { num: '6ª', note: 'Ré', pt: 'mais grave<br>par bordão', stringIdx: 5 },
+    ];
+    container.innerHTML = stringsInfo.map(s =>
+      `<div class="tuning-string" data-string="${s.stringIdx}" data-fret="0">
+        <div class="num">${s.num}</div>
+        <div class="note">${s.note}</div>
+        <div class="pt">${s.pt}</div>
+      </div>`
+    ).join('');
+
+    // Click handlers
+    container.querySelectorAll('.tuning-string').forEach(el => {
+      el.addEventListener('click', () => {
+        const stringIdx = parseInt(el.dataset.string);
+        window.GPAudio.playSingleString(stringIdx, 0);
+      });
+    });
+  }
+
+  // ============================================================
+  // Filtros
+  // ============================================================
+  function buildFilters() {
+    const rootContainer = document.getElementById('root-filters');
+    const typeContainer = document.getElementById('type-filters');
+
+    // Tónicas
+    rootContainer.appendChild(makeBtn('Todas', 'all', 'root', 'btn-root active', () => {
+      activeRoot = 'all'; updateFilters();
+    }));
+    META.roots.forEach(r => {
+      rootContainer.appendChild(makeBtn(META.note_pt[r], r, 'root', 'btn-root', () => {
+        activeRoot = r; updateFilters();
+      }));
+    });
+
+    // Tipos
+    typeContainer.appendChild(makeBtn('Todos', 'all', 'type', 'active', () => {
+      activeType = 'all'; updateFilters();
+    }));
+    META.type_order.forEach(t => {
+      typeContainer.appendChild(makeBtn(META.type_label[t], t, 'type', '', () => {
+        activeType = t; updateFilters();
+      }));
+    });
+  }
+
+  function makeBtn(label, value, kind, extraClasses, onClick) {
+    const btn = document.createElement('button');
+    btn.className = 'btn ' + (extraClasses || '');
+    btn.textContent = label;
+    btn.dataset.value = value;
+    btn.dataset.kind = kind;
+    btn.addEventListener('click', onClick);
+    return btn;
+  }
+
+  function updateFilters() {
+    document.querySelectorAll('.btn[data-kind]').forEach(b => {
+      b.classList.remove('active');
+      if (b.dataset.kind === 'root' && b.dataset.value === activeRoot) b.classList.add('active');
+      if (b.dataset.kind === 'type' && b.dataset.value === activeType) b.classList.add('active');
+    });
+    renderChords();
+  }
+
+  // ============================================================
+  // Notas/MIDI helpers
+  // ============================================================
+  function noteAt(stringIdx, fret) {
+    const midi = META.string_midi[stringIdx] + fret;
+    return NOTES_LIST[midi % 12];
+  }
+
+  // ============================================================
+  // Diagrama (SVG)
+  // ============================================================
+  function makeDiagram(voicing, root, chordKey) {
+    const W = 210;
+    const nStrings = 6;
+    const nFrets = 12;
+    const padLeft = 30;
+    const padRight = 14;
+    const padTop = 28;
+    const padBottom = 18;
+    const stringSpacing = (W - padLeft - padRight) / (nStrings - 1);
+    const fretHeight = 22;
+    const H = padTop + fretHeight * nFrets + padBottom;
+
+    const frets = voicing.frets;
+    const stringThickness = [0.8, 0.9, 1.1, 1.2, 1.4, 1.7]; // corda 1 a 6
+    const rootPc = NOTES_LIST.indexOf(root);
+
+    // Identificar qual a corda do baixo (mais grave tocada)
+    let bassStringIdx = null;
+    let bassMidi = null;
+    for (let i = 5; i >= 0; i--) {
+      if (frets[i] !== null && frets[i] !== undefined) {
+        const midi = META.string_midi[i] + frets[i];
+        if (bassMidi === null || midi < bassMidi) {
+          bassMidi = midi;
+          bassStringIdx = i;
+        }
+      }
+    }
+
+    let svg = `<svg class="fretboard" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" data-chord="${chordKey}">`;
+
+    // Marcadores nas casas tradicionais
+    const markers = [3, 5, 7, 9];
+    markers.forEach(m => {
+      const cy = padTop + (m - 0.5) * fretHeight;
+      const cx = (padLeft + (W - padRight)) / 2;
+      svg += `<circle class="fret-marker" cx="${cx}" cy="${cy}" r="3.5"/>`;
+    });
+    const cy12 = padTop + (12 - 0.5) * fretHeight;
+    svg += `<circle class="fret-marker" cx="${padLeft + stringSpacing * 1.3}" cy="${cy12}" r="3.5"/>`;
+    svg += `<circle class="fret-marker" cx="${padLeft + stringSpacing * 3.7}" cy="${cy12}" r="3.5"/>`;
+
+    // Cordas (verticais) - corda 6 (mais grossa) à esquerda, corda 1 (mais fina) à direita
+    for (let s = 0; s < nStrings; s++) {
+      const x = padLeft + s * stringSpacing;
+      const stringIdx = 5 - s; // s=0 visualmente à esquerda = corda 6
+      const sw = stringThickness[stringIdx];
+      const cls = 'string-line' + (stringIdx >= 3 ? ' thick' : '');
+      svg += `<line class="${cls}" data-string="${stringIdx}" x1="${x}" y1="${padTop}" x2="${x}" y2="${padTop + fretHeight * nFrets}" style="stroke-width:${sw}"/>`;
+    }
+
+    // Pestana
+    svg += `<line class="nut-line" x1="${padLeft - 2}" y1="${padTop}" x2="${W - padRight + 2}" y2="${padTop}"/>`;
+
+    // Trastes (horizontais)
+    for (let f = 1; f <= nFrets; f++) {
+      const y = padTop + f * fretHeight;
+      const cls = (f === 12) ? 'fret-line fret-12' : 'fret-line';
+      svg += `<line class="${cls}" x1="${padLeft}" y1="${y}" x2="${W - padRight}" y2="${y}"/>`;
+    }
+
+    // Etiquetas das cordas em cima
+    for (let s = 0; s < nStrings; s++) {
+      const visualPos = 5 - s;
+      const x = padLeft + visualPos * stringSpacing;
+      const stringNote = META.note_pt[META.strings[s]];
+      svg += `<text class="string-label" x="${x}" y="${padTop - 14}" text-anchor="middle">${stringNote}</text>`;
+      svg += `<text class="string-label" x="${x}" y="${padTop - 4}" text-anchor="middle" style="font-size:7px">${s + 1}ª</text>`;
+    }
+
+    // Etiquetas dos trastes
+    [3, 5, 7, 9, 12].forEach(f => {
+      const y = padTop + (f - 0.5) * fretHeight + 3;
+      svg += `<text class="fret-label" x="${padLeft - 8}" y="${y}" text-anchor="end">${f}</text>`;
+    });
+
+    // Pontos (notas tocadas) e X (mutadas)
+    for (let i = 0; i < 6; i++) {
+      const f = frets[i];
+      const visualPos = 5 - i;
+      const x = padLeft + visualPos * stringSpacing;
+
+      if (f === null || f === undefined) {
+        // X em cima
+        const y = padTop - 10;
+        const sz = 3.5;
+        svg += `<line class="muted-x" x1="${x - sz}" y1="${y - sz}" x2="${x + sz}" y2="${y + sz}"/>`;
+        svg += `<line class="muted-x" x1="${x - sz}" y1="${y + sz}" x2="${x + sz}" y2="${y - sz}"/>`;
+      } else if (f === 0) {
+        const y = padTop - 10;
+        const isRoot = META.strings[i] === root;
+        const isBass = (i === bassStringIdx);
+        const cls = 'open-circle' + (isRoot ? ' is-root' : '') + (isBass && !isRoot ? ' is-bass' : '');
+        svg += `<g class="clickable-note" data-string="${i}" data-fret="0">
+          <circle class="${cls}" cx="${x}" cy="${y}" r="5"/>
+        </g>`;
+      } else {
+        const y = padTop + (f - 0.5) * fretHeight;
+        const noteHere = noteAt(i, f);
+        const isRoot = noteHere === root;
+        const isBass = (i === bassStringIdx);
+        const cls = 'finger-dot' + (isRoot ? ' is-root' : '') + (isBass && !isRoot ? ' is-bass' : '');
+        svg += `<g class="clickable-note" data-string="${i}" data-fret="${f}">
+          <circle class="${cls}" cx="${x}" cy="${y}" r="6"/>
+        </g>`;
+      }
+    }
+
+    svg += '</svg>';
+    return svg;
+  }
+
+  // ============================================================
+  // Card do acorde
+  // ============================================================
+  function getInversionsForChord(chord) {
+    // Organiza voicings por inversão
+    const byInv = {};
+    chord.voicings.forEach((v, idx) => {
+      const inv = v.inversion || 'Fundamental';
+      if (!byInv[inv]) byInv[inv] = [];
+      byInv[inv].push({ voicing: v, originalIdx: idx });
+    });
+    return byInv;
+  }
+
+  function makeChordCard(key, chord) {
+    const sym = META.type_symbol[chord.type];
+    const ptName = META.note_pt[chord.root] + ' ' + META.type_name_pt[chord.type];
+
+    if (!cardState[key]) {
+      cardState[key] = { inversion: 'Fundamental', voicingIdx: null };
+    }
+
+    const inversionsMap = getInversionsForChord(chord);
+    const availableInversions = INVERSIONS_ORDER.filter(inv => inversionsMap[inv] && inversionsMap[inv].length > 0);
+
+    // Se a inversão atualmente selecionada não tem voicings, escolhe a primeira disponível
+    if (!inversionsMap[cardState[key].inversion]) {
+      cardState[key].inversion = availableInversions[0];
+      cardState[key].voicingIdx = null;
+    }
+
+    const currentInversion = cardState[key].inversion;
+    const currentVoicings = inversionsMap[currentInversion] || [];
+
+    // Se não há voicingIdx escolhido, usa o primeiro desta inversão
+    if (cardState[key].voicingIdx === null ||
+        !currentVoicings.find(cv => cv.originalIdx === cardState[key].voicingIdx)) {
+      cardState[key].voicingIdx = currentVoicings.length > 0 ? currentVoicings[0].originalIdx : null;
+    }
+
+    const activeIdx = cardState[key].voicingIdx;
+    const activeVoicing = activeIdx !== null ? chord.voicings[activeIdx] : null;
+
+    // Notas do acorde (pílulas)
+    let notesHTML = '';
+    chord.notes.forEach(n => {
+      const isRoot = n === chord.root;
+      notesHTML += `<span class="note-pill ${isRoot ? 'is-root' : ''}">${META.note_pt[n]}</span>`;
+    });
+
+    // Nome do acorde - com baixo se for inversão
+    let nameHTML = `${chord.root}<span class="accent">${sym}</span>`;
+    if (activeVoicing && currentInversion !== 'Fundamental' && activeVoicing.bass) {
+      nameHTML += `<span class="bass-suffix"> / ${activeVoicing.bass}</span>`;
+    }
+
+    // Tabs de inversões
+    let invTabsHTML = '<div class="inversion-tabs">';
+    availableInversions.forEach(inv => {
+      const count = inversionsMap[inv].length;
+      const active = (inv === currentInversion);
+      invTabsHTML += `<button class="inv-tab ${active ? 'active' : ''}" data-key="${key}" data-inv="${inv}">
+        ${inv}<span class="count">·${count}</span>
+      </button>`;
+    });
+    invTabsHTML += '</div>';
+
+    // Agrupa voicings da inversão atual por grupo de cordas
+    const groupedVoicings = {};
+    currentVoicings.forEach(cv => {
+      const g = cv.voicing.group || 'outro';
+      if (!groupedVoicings[g]) groupedVoicings[g] = [];
+      groupedVoicings[g].push(cv);
+    });
+
+    // Tabs de variações
+    let varTabsHTML = '<div class="variation-groups">';
+    let posCounter = 0;
+    META.group_order.forEach(g => {
+      if (!groupedVoicings[g]) return;
+      const items = groupedVoicings[g];
+      const shortLabel = (META.group_label[g] || g).split('(')[0].trim();
+      varTabsHTML += '<div class="var-group">';
+      varTabsHTML += `<div class="var-group-label">${shortLabel}</div>`;
+      varTabsHTML += '<div class="var-group-buttons">';
+      items.forEach(cv => {
+        posCounter++;
+        const isActive = cv.originalIdx === activeIdx;
+        varTabsHTML += `<button class="var-btn ${isActive ? 'active' : ''}" data-key="${key}" data-idx="${cv.originalIdx}" title="Posição ${posCounter}">${posCounter}</button>`;
+      });
+      varTabsHTML += '</div></div>';
+    });
+    varTabsHTML += '</div>';
+
+    // Diagrama
+    let diagramHTML = '';
+    let voicingInfoHTML = '';
+    let playControlsHTML = '';
+    if (activeVoicing) {
+      diagramHTML = `<div class="diagram-container">${makeDiagram(activeVoicing, chord.root, key)}</div>`;
+
+      const pressedFrets = activeVoicing.frets.filter(f => f !== null && f > 0);
+      const groupLabel = META.group_label[activeVoicing.group] || '';
+      let posInfo;
+      if (pressedFrets.length === 0) {
+        posInfo = 'Tudo em cordas soltas · ' + groupLabel;
+      } else if (activeVoicing.fingers === 1) {
+        posInfo = '1 dedo · casa ' + activeVoicing.min_fret + ' · ' + groupLabel;
+      } else {
+        posInfo = activeVoicing.fingers + ' dedos · casas ' + activeVoicing.min_fret +
+                  (activeVoicing.max_fret !== activeVoicing.min_fret ? '–' + activeVoicing.max_fret : '') +
+                  ' · ' + groupLabel;
+      }
+      voicingInfoHTML = `<div class="voicing-info">${posInfo}</div>`;
+
+      playControlsHTML = `<div class="play-controls">
+        <button class="play-btn" data-key="${key}" data-action="arpeggio"><span class="icon">▶</span>Arpejo</button>
+        <button class="play-btn" data-key="${key}" data-action="strum"><span class="icon">⏩</span>Rasgueado</button>
+      </div>`;
+    }
+
+    return `<div class="chord-card" data-key="${key}">
+      <div class="chord-header-row">
+        <div class="chord-name">${nameHTML}</div>
+        <div class="chord-pt">${ptName}</div>
+      </div>
+      <div class="chord-notes">${notesHTML}</div>
+      ${invTabsHTML}
+      ${varTabsHTML}
+      ${diagramHTML}
+      ${voicingInfoHTML}
+      ${playControlsHTML}
+    </div>`;
+  }
+
+  // ============================================================
+  // Render dos acordes
+  // ============================================================
+  function renderChords() {
+    const container = document.getElementById('chord-display');
+    const info = document.getElementById('results-info');
+    container.innerHTML = '';
+
+    const byType = {};
+    META.type_order.forEach(t => byType[t] = []);
+
+    let total = 0;
+    Object.entries(CHORDS).forEach(([key, chord]) => {
+      if (activeRoot !== 'all' && chord.root !== activeRoot) return;
+      if (activeType !== 'all' && chord.type !== activeType) return;
+      if (byType[chord.type]) {
+        byType[chord.type].push({ key, chord });
+        total++;
+      }
+    });
+
+    // Ordem dos roots
+    const rootOrder = META.natural_roots_order || ['D','A','E','B','G','C','F','D#','F#','G#','A#','C#'];
+    Object.values(byType).forEach(arr => {
+      arr.sort((a, b) => rootOrder.indexOf(a.chord.root) - rootOrder.indexOf(b.chord.root));
+    });
+
+    if (total === 0) {
+      info.textContent = 'Nenhum acorde corresponde a esta selecção.';
+      return;
+    }
+
+    info.textContent = `${total} acorde${total !== 1 ? 's' : ''} · inversões e múltiplas posições por zona do braço`;
+
+    META.type_order.forEach(type => {
+      const items = byType[type];
+      if (!items || items.length === 0) return;
+
+      const section = document.createElement('section');
+      section.className = 'chord-section';
+
+      const header = document.createElement('div');
+      header.className = 'section-header';
+      header.innerHTML = `<h2>${META.type_label[type]}</h2><span class="count">${items.length} acorde${items.length !== 1 ? 's' : ''}</span>`;
+      section.appendChild(header);
+
+      const grid = document.createElement('div');
+      grid.className = 'chord-grid';
+      items.forEach(({ key, chord }) => {
+        grid.insertAdjacentHTML('beforeend', makeChordCard(key, chord));
+      });
+      section.appendChild(grid);
+      container.appendChild(section);
+    });
+
+    attachCardListeners();
+  }
+
+  // ============================================================
+  // Event listeners (delegation)
+  // ============================================================
+  function attachCardListeners() {
+    const container = document.getElementById('chord-display');
+
+    // Click em tab de inversão
+    container.querySelectorAll('.inv-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.key;
+        const inv = btn.dataset.inv;
+        cardState[key].inversion = inv;
+        cardState[key].voicingIdx = null; // força recálculo
+        rerenderCard(key);
+      });
+    });
+
+    // Click em tab de variação
+    container.querySelectorAll('.var-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.key;
+        const idx = parseInt(btn.dataset.idx);
+        cardState[key].voicingIdx = idx;
+        rerenderCard(key);
+      });
+    });
+
+    // Click nos botões de áudio do card
+    container.querySelectorAll('.play-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.key;
+        const action = btn.dataset.action;
+        const chord = CHORDS[key];
+        const idx = cardState[key].voicingIdx;
+        if (idx === null) return;
+        const voicing = chord.voicings[idx];
+        if (!voicing) return;
+        if (action === 'arpeggio') {
+          window.GPAudio.playArpeggio(voicing.frets, 'down-up', 0.07);
+        } else if (action === 'strum') {
+          window.GPAudio.playStrum(voicing.frets, 0.012);
+        }
+      });
+    });
+
+    // Click nas cordas dos diagramas
+    container.querySelectorAll('.clickable-note').forEach(g => {
+      g.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const stringIdx = parseInt(g.dataset.string);
+        const fret = parseInt(g.dataset.fret);
+        window.GPAudio.playSingleString(stringIdx, fret);
+      });
+    });
+  }
+
+  function rerenderCard(key) {
+    const chord = CHORDS[key];
+    const cardEl = document.querySelector(`.chord-card[data-key="${key}"]`);
+    if (!cardEl) return;
+    cardEl.outerHTML = makeChordCard(key, chord);
+    attachCardListeners();
+  }
+
+  // ============================================================
+  // Mute toggle + tuning play
+  // ============================================================
+  function setupGlobalControls() {
+    const muteBtn = document.getElementById('audio-toggle');
+    muteBtn.addEventListener('click', () => {
+      const newMuted = window.GPAudio.isEnabled();
+      window.GPAudio.setMuted(newMuted);
+    });
+
+    const tuningBtn = document.getElementById('play-tuning');
+    tuningBtn.addEventListener('click', () => {
+      window.GPAudio.playTuning();
+    });
+  }
+
+  // ============================================================
+  // Arranque
+  // ============================================================
+  document.addEventListener('DOMContentLoaded', () => {
+    buildTuning();
+    buildFilters();
+    renderChords();
+    setupGlobalControls();
+  });
+  </script>
+
+</body>
+</html>
