@@ -39,14 +39,40 @@
     return freq * Math.pow(2, cents / 1200);
   }
 
+  // Painel de debug visível
+  function debugMsg(msg, isError) {
+    let panel = document.getElementById('debug-panel');
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = 'debug-panel';
+      panel.style.cssText = 'position:fixed;bottom:10px;left:10px;right:10px;background:rgba(0,0,0,0.85);color:#fff;padding:10px;font-family:monospace;font-size:11px;z-index:9999;max-height:30vh;overflow-y:auto;border-radius:4px;line-height:1.4;';
+      document.body.appendChild(panel);
+    }
+    const line = document.createElement('div');
+    line.style.color = isError ? '#ff8888' : '#88ff88';
+    line.textContent = new Date().toLocaleTimeString() + ' ' + msg;
+    panel.appendChild(line);
+    panel.scrollTop = panel.scrollHeight;
+  }
+
   // Inicializa Tone.js (lazy: só na primeira interação do utilizador)
   async function initAudio() {
-    if (Audio.initialized) return;
-    if (typeof Tone === 'undefined') {
-      console.warn('Tone.js não está carregado');
+    if (Audio.initialized) {
+      debugMsg('Audio já inicializado');
       return;
     }
-    await Tone.start();
+    if (typeof Tone === 'undefined') {
+      debugMsg('ERRO: Tone.js não carregou!', true);
+      return;
+    }
+    debugMsg('Tone.js detectado, versão: ' + (Tone.version || '?'));
+    try {
+      await Tone.start();
+      debugMsg('Tone.start() OK, contexto: ' + Tone.context.state);
+    } catch (e) {
+      debugMsg('ERRO em Tone.start(): ' + e.message, true);
+      return;
+    }
 
     // Volume master e reverb subtil
     Audio.volumeNode = new Tone.Volume(-6).toDestination();
@@ -72,6 +98,7 @@
     Audio.bordoesSynth.volume.value = -2;
 
     Audio.initialized = true;
+    debugMsg('Sintetizadores criados, audio pronto!');
   }
 
   /**
@@ -82,7 +109,8 @@
    * @param {number} duration  duração da nota
    */
   function playString(stringIdx, fret, when, duration) {
-    if (!Audio.enabled || !Audio.initialized) return;
+    if (!Audio.enabled) { debugMsg('Som mutado', true); return; }
+    if (!Audio.initialized) { debugMsg('Audio não inicializado', true); return; }
     if (fret === null || fret === undefined) return;
 
     // Afinação (MIDI de cada corda solta)
@@ -183,8 +211,10 @@
    * Toca a afinação das 6 cordas soltas, do grave para o agudo.
    */
   function playTuning() {
+    debugMsg('playTuning() chamado, enabled=' + Audio.enabled);
     if (!Audio.enabled) return;
     initAudio().then(() => {
+      debugMsg('A tocar afinação...');
       const now = Tone.now();
       // Toca da 6 para a 1, espaçadas
       const order = [5, 4, 3, 2, 1, 0];
