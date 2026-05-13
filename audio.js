@@ -1,14 +1,17 @@
 /* =====================================================
-   audio.js - Sistema de som para Guitarra Portuguesa
-   Afinação de Lisboa, 6 ordens (12 cordas)
+   audio.js - Som da Guitarra Portuguesa (Afinação Lisboa)
+   Calibrado para CORDAS ROUXINOL R-10L:
+     • Cordas lisas: aço INOXIDÁVEL (muito brilhantes, harmónicos agudos)
+     • Bordões: BRONZE PRATEADO sobre núcleo hexagonal aço carbono estanhado
+       (brilhantes, com sustain longo e definição cristalina)
 
-   Estrutura física das cordas:
-     Ordem 1 (Si):  par UNÍSSONO  — 2 cordas finas iguais
-     Ordem 2 (Lá):  par UNÍSSONO  — 2 cordas finas iguais
-     Ordem 3 (Mi):  par UNÍSSONO  — 2 cordas finas iguais
-     Ordem 4 (Si):  par OITAVA    — 1 fina + 1 bordão (oitava abaixo)
-     Ordem 5 (Lá):  par OITAVA    — 1 fina + 1 bordão (oitava abaixo)
-     Ordem 6 (Ré):  par UNÍSSONO  — 2 bordões grossos iguais
+   Calibres reais (.0095 a .031) e estrutura física:
+     Ordem 1 (Si4):  .0095 + .0095 — par UNÍSSONO de finas aço inox
+     Ordem 2 (Lá4):  .010 + .010   — par UNÍSSONO de finas aço inox
+     Ordem 3 (Mi4):  .0126 + .0126 — par UNÍSSONO de finas (mais grossa = corpo)
+     Ordem 4 (Si3):  .0095 fina + .020 bordão  — par OITAVA
+     Ordem 5 (Lá3):  .010 fina + .025 bordão   — par OITAVA
+     Ordem 6 (Ré3):  .0175 + .031  — par UNÍSSONO de bordões (calibres DIFERENTES)
    ===================================================== */
 
 (function() {
@@ -17,11 +20,17 @@
   const Audio = {
     enabled: true,
     initialized: false,
+    // 3 pools: finas (cordas lisas aço inox), bordões brilhantes (4ª/5ª e o .0175 da 6ª),
+    // bordões grossos (.020-.031, com mais corpo)
     finasPool: [],
     bordoesPool: [],
+    bordoesGrossosPool: [],
     poolIdxFinas: 0,
     poolIdxBordoes: 0,
+    poolIdxGrossos: 0,
     reverb: null,
+    eq: null,
+    compressor: null,
     volumeNode: null,
   };
 
@@ -49,31 +58,72 @@
     }
 
     try {
-      Audio.volumeNode = new Tone.Volume(-6).toDestination();
-      Audio.reverb = new Tone.Reverb({ decay: 1.4, wet: 0.18 }).connect(Audio.volumeNode);
+      // Cadeia de processamento master: volume -> compressor -> EQ -> reverb -> dest
+      Audio.volumeNode = new Tone.Volume(-5).toDestination();
 
-      // Pool de cordas finas
+      // Reverb curto e brilhante (caixa de pinho pequena, não catedral)
+      Audio.reverb = new Tone.Reverb({ decay: 1.1, wet: 0.16 }).connect(Audio.volumeNode);
+
+      // EQ para imitar a resposta da guitarra portuguesa:
+      //   - Corte severo abaixo de 100 Hz (caixa pequena não os produz)
+      //   - Realce em ~4-6 kHz (brilho metálico característico)
+      //   - Ligeiro corte em ~250 Hz para clareza (evitar "boomy")
+      Audio.eq = new Tone.EQ3({
+        low: -3,       // -3 dB nos graves abaixo de 250 Hz
+        mid: 0,
+        high: +4,      // +4 dB nos agudos (brilho cristalino)
+        lowFrequency: 250,
+        highFrequency: 3500,
+      }).connect(Audio.reverb);
+
+      // Compressor leve para "presença" e ataque definido
+      Audio.compressor = new Tone.Compressor({
+        threshold: -18,
+        ratio: 2.5,
+        attack: 0.003,
+        release: 0.1,
+      }).connect(Audio.eq);
+
+      // === POOL DE CORDAS FINAS (aço inox, brilhantes e cristalinas) ===
+      // attackNoise alto = mais "tilintar" no ataque
+      // dampening MUITO alto (8000+) = pouca absorção dos agudos = brilho prolongado
+      // resonance alto = sustain longo
       for (let i = 0; i < POOL_SIZE; i++) {
         const synth = new Tone.PluckSynth({
-          attackNoise: 0.7,
-          dampening: 5200,
-          resonance: 0.96,
-          release: 1.4,
-        }).connect(Audio.reverb);
-        synth.volume.value = -3;
+          attackNoise: 1.0,      // ataque mais ruidoso/metálico
+          dampening: 8500,       // cordas inox: pouco abafamento dos agudos
+          resonance: 0.985,      // sustain longo (núcleo hexagonal estanhado)
+          release: 1.8,
+        }).connect(Audio.compressor);
+        synth.volume.value = -2;
         Audio.finasPool.push(synth);
       }
 
-      // Pool de bordões
+      // === POOL DE BORDÕES BRILHANTES (bronze prateado fino) ===
+      // Para a 4ª e 5ª ordens e o .0175 da 6ª
+      // Bronze prateado = mais brilhante que bronze comum
       for (let i = 0; i < POOL_SIZE; i++) {
         const synth = new Tone.PluckSynth({
-          attackNoise: 0.35,
-          dampening: 2400,
-          resonance: 0.985,
-          release: 2.2,
-        }).connect(Audio.reverb);
-        synth.volume.value = -2;
+          attackNoise: 0.6,
+          dampening: 4500,       // mais brilho que bordões standard
+          resonance: 0.99,       // sustain muito longo
+          release: 2.5,
+        }).connect(Audio.compressor);
+        synth.volume.value = -1;
         Audio.bordoesPool.push(synth);
+      }
+
+      // === POOL DE BORDÕES GROSSOS (.031 da 6ª ordem) ===
+      // O bordão mais grosso da 6ª, mais corpo nos graves mas ainda brilhante
+      for (let i = 0; i < POOL_SIZE; i++) {
+        const synth = new Tone.PluckSynth({
+          attackNoise: 0.45,
+          dampening: 3200,
+          resonance: 0.992,
+          release: 3.0,          // sustain muito longo
+        }).connect(Audio.compressor);
+        synth.volume.value = 0;
+        Audio.bordoesGrossosPool.push(synth);
       }
 
       Audio.initialized = true;
@@ -92,7 +142,16 @@
     Audio.poolIdxBordoes = (Audio.poolIdxBordoes + 1) % POOL_SIZE;
     return s;
   }
+  function nextBordaoGrosso() {
+    const s = Audio.bordoesGrossosPool[Audio.poolIdxGrossos];
+    Audio.poolIdxGrossos = (Audio.poolIdxGrossos + 1) % POOL_SIZE;
+    return s;
+  }
 
+  /**
+   * Toca uma corda DUPLA da guitarra portuguesa.
+   * Replica fielmente a estrutura física das Rouxinol R-10L.
+   */
   function playString(stringIdx, fret, when) {
     if (!Audio.enabled) return;
     if (!Audio.initialized) return;
@@ -103,29 +162,52 @@
     const baseFreq = midiToFreq(baseMidi);
 
     let pairs;
-    if (stringIdx <= 2) {
-      // Ordens 1, 2, 3: par UNÍSSONO (2 finas iguais)
+    if (stringIdx === 0) {
+      // 1ª ordem Si4: par UNÍSSONO de finas .0095 (as mais agudas e brilhantes)
       pairs = [
-        { synth: nextFina(), freq: detune(baseFreq, -3), delay: 0 },
-        { synth: nextFina(), freq: detune(baseFreq, +3), delay: 0.005 },
+        { synth: nextFina(), freq: detune(baseFreq, -4), delay: 0,     vol: 0 },
+        { synth: nextFina(), freq: detune(baseFreq, +4), delay: 0.004, vol: 0 },
       ];
-    } else if (stringIdx === 5) {
-      // Ordem 6: par UNÍSSONO de BORDÕES
+    } else if (stringIdx === 1) {
+      // 2ª ordem Lá4: par UNÍSSONO de finas .010
       pairs = [
-        { synth: nextBordao(), freq: detune(baseFreq, -2), delay: 0 },
-        { synth: nextBordao(), freq: detune(baseFreq, +2), delay: 0.005 },
+        { synth: nextFina(), freq: detune(baseFreq, -4), delay: 0,     vol: 0 },
+        { synth: nextFina(), freq: detune(baseFreq, +4), delay: 0.004, vol: 0 },
+      ];
+    } else if (stringIdx === 2) {
+      // 3ª ordem Mi4: par UNÍSSONO de finas .0126 (mais grossas, ligeiramente menos brilhantes)
+      pairs = [
+        { synth: nextFina(), freq: detune(baseFreq, -3), delay: 0,     vol: -1 },
+        { synth: nextFina(), freq: detune(baseFreq, +3), delay: 0.005, vol: -1 },
+      ];
+    } else if (stringIdx === 3) {
+      // 4ª ordem Si3: par OITAVA
+      // - fina .0095 (TOCA NA OITAVA AGUDA, baseFreq normal)
+      // - bordão .020 bronze prateado (TOCA UMA OITAVA ABAIXO)
+      // Resultado: ouvem-se as duas em simultâneo, oitava separa-as
+      pairs = [
+        { synth: nextBordao(), freq: detune(baseFreq / 2, -3), delay: 0,     vol: 0 },
+        { synth: nextFina(),   freq: detune(baseFreq, +4),     delay: 0.007, vol: -1 },
+      ];
+    } else if (stringIdx === 4) {
+      // 5ª ordem Lá3: par OITAVA
+      // - fina .010 + bordão .025 bronze prateado uma oitava abaixo
+      pairs = [
+        { synth: nextBordao(), freq: detune(baseFreq / 2, -3), delay: 0,     vol: 0 },
+        { synth: nextFina(),   freq: detune(baseFreq, +4),     delay: 0.007, vol: -1 },
       ];
     } else {
-      // Ordens 4, 5: par OITAVA (bordão grave + fina aguda)
+      // 6ª ordem Ré3: par UNÍSSONO de BORDÕES com CALIBRES DIFERENTES
+      // - .0175 (mais brilhante) + .031 (mais corpo)
+      // Os dois afinados na mesma nota mas com timbres complementares
       pairs = [
-        { synth: nextBordao(), freq: detune(baseFreq / 2, -3), delay: 0 },
-        { synth: nextFina(),   freq: detune(baseFreq, +3),     delay: 0.008 },
+        { synth: nextBordao(),        freq: detune(baseFreq, -3), delay: 0,     vol: -1 },
+        { synth: nextBordaoGrosso(),  freq: detune(baseFreq, +3), delay: 0.006, vol: 0 },
       ];
     }
 
-    pairs.forEach(p => {
+    pairs.forEach(function(p) {
       try {
-        // PluckSynth: triggerAttack só (decai naturalmente)
         p.synth.triggerAttack(p.freq, when + p.delay);
       } catch (e) {
         console.warn('Erro a tocar nota:', e);
@@ -135,7 +217,7 @@
 
   function playArpeggio(frets, direction, spread) {
     direction = direction || 'down-up';
-    spread = spread || 0.07;
+    spread = spread || 0.075;
     if (!Audio.enabled) return;
     initAudio().then(function() {
       if (!Audio.initialized) return;
