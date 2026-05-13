@@ -9,164 +9,143 @@
      Ordem 4 (Si):  par OITAVA    — 1 fina + 1 bordão (oitava abaixo)
      Ordem 5 (Lá):  par OITAVA    — 1 fina + 1 bordão (oitava abaixo)
      Ordem 6 (Ré):  par UNÍSSONO  — 2 bordões grossos iguais
-
-   Cada par toca com:
-     - Detune subtil (~5 cents) entre as 2 cordas → chorus natural
-     - Pequeno atraso (~5ms) entre cordas do mesmo par
-     - Timbres distintos para "fina" vs "bordão"
    ===================================================== */
 
 (function() {
   'use strict';
 
-  // Estado global do áudio
   const Audio = {
     enabled: true,
     initialized: false,
-    finasSynth: null,   // sintetizador para cordas finas (brilhantes)
-    bordoesSynth: null, // sintetizador para bordões (mais escuros, mais sustain)
+    finasPool: [],
+    bordoesPool: [],
+    poolIdxFinas: 0,
+    poolIdxBordoes: 0,
     reverb: null,
     volumeNode: null,
   };
 
-  // MIDI para frequência
+  const POOL_SIZE = 14;
+
   function midiToFreq(midi) {
     return 440 * Math.pow(2, (midi - 69) / 12);
   }
 
-  // Aplica detune em cents para retornar frequência ligeiramente desafinada
   function detune(freq, cents) {
     return freq * Math.pow(2, cents / 1200);
   }
 
-  // Painel de debug visível
-  function debugMsg(msg, isError) {
-    let panel = document.getElementById('debug-panel');
-    if (!panel) {
-      panel = document.createElement('div');
-      panel.id = 'debug-panel';
-      panel.style.cssText = 'position:fixed;bottom:10px;left:10px;right:10px;background:rgba(0,0,0,0.85);color:#fff;padding:10px;font-family:monospace;font-size:11px;z-index:9999;max-height:30vh;overflow-y:auto;border-radius:4px;line-height:1.4;';
-      document.body.appendChild(panel);
-    }
-    const line = document.createElement('div');
-    line.style.color = isError ? '#ff8888' : '#88ff88';
-    line.textContent = new Date().toLocaleTimeString() + ' ' + msg;
-    panel.appendChild(line);
-    panel.scrollTop = panel.scrollHeight;
-  }
-
-  // Inicializa Tone.js (lazy: só na primeira interação do utilizador)
   async function initAudio() {
-    if (Audio.initialized) {
-      debugMsg('Audio já inicializado');
-      return;
-    }
+    if (Audio.initialized) return;
     if (typeof Tone === 'undefined') {
-      debugMsg('ERRO: Tone.js não carregou!', true);
+      console.warn('Tone.js não carregou');
       return;
     }
-    debugMsg('Tone.js detectado, versão: ' + (Tone.version || '?'));
     try {
       await Tone.start();
-      debugMsg('Tone.start() OK, contexto: ' + Tone.context.state);
     } catch (e) {
-      debugMsg('ERRO em Tone.start(): ' + e.message, true);
+      console.warn('Tone.start() falhou:', e);
       return;
     }
 
-    // Volume master e reverb subtil
-    Audio.volumeNode = new Tone.Volume(-6).toDestination();
-    Audio.reverb = new Tone.Reverb({ decay: 1.4, wet: 0.18 }).connect(Audio.volumeNode);
+    try {
+      Audio.volumeNode = new Tone.Volume(-6).toDestination();
+      Audio.reverb = new Tone.Reverb({ decay: 1.4, wet: 0.18 }).connect(Audio.volumeNode);
 
-    // Sintetizador para CORDAS FINAS — brilhante, com ataque metálico
-    // PluckSynth simula corda dedilhada (Karplus-Strong)
-    Audio.finasSynth = new Tone.PolySynth(Tone.PluckSynth, {
-      attackNoise: 0.7,
-      dampening: 5200,
-      resonance: 0.96,
-      release: 1.4,
-    }).connect(Audio.reverb);
-    Audio.finasSynth.volume.value = -3;
+      // Pool de cordas finas
+      for (let i = 0; i < POOL_SIZE; i++) {
+        const synth = new Tone.PluckSynth({
+          attackNoise: 0.7,
+          dampening: 5200,
+          resonance: 0.96,
+          release: 1.4,
+        }).connect(Audio.reverb);
+        synth.volume.value = -3;
+        Audio.finasPool.push(synth);
+      }
 
-    // Sintetizador para BORDÕES — mais escuro, mais sustain, mais corpo
-    Audio.bordoesSynth = new Tone.PolySynth(Tone.PluckSynth, {
-      attackNoise: 0.35,
-      dampening: 2400,
-      resonance: 0.985,
-      release: 2.2,
-    }).connect(Audio.reverb);
-    Audio.bordoesSynth.volume.value = -2;
+      // Pool de bordões
+      for (let i = 0; i < POOL_SIZE; i++) {
+        const synth = new Tone.PluckSynth({
+          attackNoise: 0.35,
+          dampening: 2400,
+          resonance: 0.985,
+          release: 2.2,
+        }).connect(Audio.reverb);
+        synth.volume.value = -2;
+        Audio.bordoesPool.push(synth);
+      }
 
-    Audio.initialized = true;
-    debugMsg('Sintetizadores criados, audio pronto!');
+      Audio.initialized = true;
+    } catch (e) {
+      console.warn('Erro a criar sintetizadores:', e);
+    }
   }
 
-  /**
-   * Toca uma corda DUPLA da guitarra portuguesa.
-   * @param {number} stringIdx 0..5 (0 = corda 1 mais aguda, 5 = corda 6 mais grave)
-   * @param {number} fret      casa premida (0 = solta, null = mutada)
-   * @param {number} when      tempo em segundos (Tone.now() + offset) para tocar
-   * @param {number} duration  duração da nota
-   */
-  function playString(stringIdx, fret, when, duration) {
-    if (!Audio.enabled) { debugMsg('Som mutado', true); return; }
-    if (!Audio.initialized) { debugMsg('Audio não inicializado', true); return; }
+  function nextFina() {
+    const s = Audio.finasPool[Audio.poolIdxFinas];
+    Audio.poolIdxFinas = (Audio.poolIdxFinas + 1) % POOL_SIZE;
+    return s;
+  }
+  function nextBordao() {
+    const s = Audio.bordoesPool[Audio.poolIdxBordoes];
+    Audio.poolIdxBordoes = (Audio.poolIdxBordoes + 1) % POOL_SIZE;
+    return s;
+  }
+
+  function playString(stringIdx, fret, when) {
+    if (!Audio.enabled) return;
+    if (!Audio.initialized) return;
     if (fret === null || fret === undefined) return;
 
-    // Afinação (MIDI de cada corda solta)
-    const TUNING_MIDI = [71, 69, 64, 59, 57, 50]; // corda 1..6
+    const TUNING_MIDI = [71, 69, 64, 59, 57, 50];
     const baseMidi = TUNING_MIDI[stringIdx] + fret;
     const baseFreq = midiToFreq(baseMidi);
 
-    // Configura o par consoante a corda
     let pairs;
     if (stringIdx <= 2) {
       // Ordens 1, 2, 3: par UNÍSSONO (2 finas iguais)
       pairs = [
-        { synth: Audio.finasSynth, freq: detune(baseFreq, -3), delay: 0 },
-        { synth: Audio.finasSynth, freq: detune(baseFreq, +3), delay: 0.005 },
+        { synth: nextFina(), freq: detune(baseFreq, -3), delay: 0 },
+        { synth: nextFina(), freq: detune(baseFreq, +3), delay: 0.005 },
       ];
     } else if (stringIdx === 5) {
-      // Ordem 6: par UNÍSSONO de BORDÕES (2 graves iguais)
+      // Ordem 6: par UNÍSSONO de BORDÕES
       pairs = [
-        { synth: Audio.bordoesSynth, freq: detune(baseFreq, -2), delay: 0 },
-        { synth: Audio.bordoesSynth, freq: detune(baseFreq, +2), delay: 0.005 },
+        { synth: nextBordao(), freq: detune(baseFreq, -2), delay: 0 },
+        { synth: nextBordao(), freq: detune(baseFreq, +2), delay: 0.005 },
       ];
     } else {
-      // Ordens 4, 5: par OITAVA (1 fina aguda + 1 bordão uma oitava abaixo)
-      // O bordão soa uma oitava ABAIXO da fina; a "nota nominal" é a fina (aguda).
-      const finaFreq = baseFreq;             // a fina toca a nota
-      const bordaoFreq = baseFreq / 2;       // o bordão toca uma oitava abaixo
+      // Ordens 4, 5: par OITAVA (bordão grave + fina aguda)
       pairs = [
-        { synth: Audio.bordoesSynth, freq: detune(bordaoFreq, -3), delay: 0 },
-        { synth: Audio.finasSynth,   freq: detune(finaFreq, +3),   delay: 0.008 },
+        { synth: nextBordao(), freq: detune(baseFreq / 2, -3), delay: 0 },
+        { synth: nextFina(),   freq: detune(baseFreq, +3),     delay: 0.008 },
       ];
     }
 
-    // Toca cada nota do par
     pairs.forEach(p => {
       try {
-        p.synth.triggerAttackRelease(p.freq, duration || 1.8, when + p.delay);
+        // PluckSynth: triggerAttack só (decai naturalmente)
+        p.synth.triggerAttack(p.freq, when + p.delay);
       } catch (e) {
         console.warn('Erro a tocar nota:', e);
       }
     });
   }
 
-  /**
-   * Toca um acorde em ARPEJO (corda 6 → corda 1, ou vice-versa).
-   */
-  function playArpeggio(frets, direction = 'down-up', spread = 0.05) {
+  function playArpeggio(frets, direction, spread) {
+    direction = direction || 'down-up';
+    spread = spread || 0.07;
     if (!Audio.enabled) return;
-    initAudio().then(() => {
-      const now = Tone.now();
-      // 'down-up': começa na corda mais grave (idx 5) e sobe para a 1 (idx 0)
+    initAudio().then(function() {
+      if (!Audio.initialized) return;
+      const now = Tone.now() + 0.05;
       const order = direction === 'down-up' ? [5, 4, 3, 2, 1, 0] : [0, 1, 2, 3, 4, 5];
       let step = 0;
-      order.forEach(stringIdx => {
+      order.forEach(function(stringIdx) {
         const fret = frets[stringIdx];
         if (fret !== null && fret !== undefined) {
-          playString(stringIdx, fret, now + step * spread, 2.0);
+          playString(stringIdx, fret, now + step * spread);
           highlightString(stringIdx, step * spread * 1000);
           step++;
         }
@@ -174,20 +153,18 @@
     });
   }
 
-  /**
-   * Toca todas as cordas em SIMULTÂNEO (rasgueado rápido).
-   */
-  function playStrum(frets, spread = 0.012) {
+  function playStrum(frets, spread) {
+    spread = spread || 0.012;
     if (!Audio.enabled) return;
-    initAudio().then(() => {
-      const now = Tone.now();
-      // Direção down-up: do grave para o agudo, mas muito rápido
+    initAudio().then(function() {
+      if (!Audio.initialized) return;
+      const now = Tone.now() + 0.05;
       const order = [5, 4, 3, 2, 1, 0];
       let step = 0;
-      order.forEach(stringIdx => {
+      order.forEach(function(stringIdx) {
         const fret = frets[stringIdx];
         if (fret !== null && fret !== undefined) {
-          playString(stringIdx, fret, now + step * spread, 2.2);
+          playString(stringIdx, fret, now + step * spread);
           highlightString(stringIdx, step * spread * 1000);
           step++;
         }
@@ -195,70 +172,53 @@
     });
   }
 
-  /**
-   * Toca apenas uma corda (quando o utilizador clica nela no diagrama).
-   */
   function playSingleString(stringIdx, fret) {
     if (!Audio.enabled) return;
-    initAudio().then(() => {
-      const now = Tone.now();
-      playString(stringIdx, fret, now, 2.0);
+    initAudio().then(function() {
+      if (!Audio.initialized) return;
+      const now = Tone.now() + 0.05;
+      playString(stringIdx, fret, now);
       highlightString(stringIdx, 0);
     });
   }
 
-  /**
-   * Toca a afinação das 6 cordas soltas, do grave para o agudo.
-   */
   function playTuning() {
-    debugMsg('playTuning() chamado, enabled=' + Audio.enabled);
     if (!Audio.enabled) return;
-    initAudio().then(() => {
-      debugMsg('A tocar afinação...');
-      const now = Tone.now();
-      // Toca da 6 para a 1, espaçadas
+    initAudio().then(function() {
+      if (!Audio.initialized) return;
+      const now = Tone.now() + 0.05;
       const order = [5, 4, 3, 2, 1, 0];
-      order.forEach((stringIdx, i) => {
-        playString(stringIdx, 0, now + i * 0.55, 1.5);
-        setTimeout(() => highlightTuningString(stringIdx), i * 550);
+      order.forEach(function(stringIdx, i) {
+        playString(stringIdx, 0, now + i * 0.55);
+        setTimeout(function() { highlightTuningString(stringIdx); }, i * 550);
       });
     });
   }
 
-  /**
-   * Realça visualmente a corda quando toca.
-   */
   function highlightString(stringIdx, delayMs) {
-    setTimeout(() => {
-      // Encontra a corda ativa no diagrama do card atual
-      document.querySelectorAll('.diagram-container svg').forEach(svg => {
+    setTimeout(function() {
+      document.querySelectorAll('.diagram-container svg').forEach(function(svg) {
         const stringEl = svg.querySelector('.string-line[data-string="' + stringIdx + '"]');
         if (stringEl) {
           stringEl.classList.add('playing');
-          setTimeout(() => stringEl.classList.remove('playing'), 500);
+          setTimeout(function() { stringEl.classList.remove('playing'); }, 500);
         }
       });
     }, delayMs);
   }
 
-  /**
-   * Realça a corda no painel de afinação.
-   */
   function highlightTuningString(stringIdx) {
     const el = document.querySelector('.tuning-string[data-string="' + stringIdx + '"]');
     if (el) {
       el.style.background = 'var(--burgundy)';
       el.style.color = 'var(--paper)';
-      setTimeout(() => {
+      setTimeout(function() {
         el.style.background = '';
         el.style.color = '';
       }, 600);
     }
   }
 
-  /**
-   * Toggle mute global.
-   */
   function setMuted(muted) {
     Audio.enabled = !muted;
     const btn = document.getElementById('audio-toggle');
@@ -269,7 +229,6 @@
     }
   }
 
-  // Expor API global
   window.GPAudio = {
     init: initAudio,
     playArpeggio: playArpeggio,
@@ -277,6 +236,6 @@
     playSingleString: playSingleString,
     playTuning: playTuning,
     setMuted: setMuted,
-    isEnabled: () => Audio.enabled,
+    isEnabled: function() { return Audio.enabled; },
   };
 })();
